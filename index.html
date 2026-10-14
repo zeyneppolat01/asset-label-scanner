@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Asset Sayım</title>
+<style>
+:root{--bg:#f2f4f3;--surface:#fff;--ink:#16211f;--muted:#5d6b68;--line:#d3dad8;--accent:#0b6e5f;--accent-ink:#fff;--warn:#b3261e;--ok:#1b7a43}
+@media(prefers-color-scheme:dark){:root{--bg:#101615;--surface:#182120;--ink:#e8efed;--muted:#97a6a3;--line:#2b3836;--accent:#4cc3ae;--accent-ink:#06201b;--warn:#ff8a80;--ok:#6fd49a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:640px;margin:0 auto;padding:12px 14px 40px}
+header{display:flex;align-items:baseline;justify-content:space-between;padding:6px 0 10px}
+h1{font-size:1.15rem;margin:0}
+#count{font-size:2rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--accent)}
+#count small{font-size:.8rem;font-weight:400;color:var(--muted);margin-left:4px}
+#reader{width:100%;min-height:80px;background:#000;border-radius:10px;overflow:hidden;border:2px solid var(--line)}
+#msg{min-height:1.6em;margin:8px 0;font-weight:600}
+#msg.warn{color:var(--warn)}#msg.ok{color:var(--ok)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+button{font:inherit;padding:11px 14px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button.danger{color:var(--warn)}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+.grow{flex:1}
+ul{list-style:none;margin:12px 0 0;padding:0}
+li button{width:100%;text-align:left;display:flex;flex-direction:column;gap:2px;margin-bottom:6px}
+.id{font-weight:700;font-variant-numeric:tabular-nums;font-size:1.05rem}
+.meta{color:var(--muted);font-size:.9rem}
+.empty{color:var(--muted);padding:18px 0}
+dialog{width:min(560px,100vw - 20px);border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--ink);padding:16px;max-height:94vh}
+dialog::backdrop{background:rgba(0,0,0,.55)}
+form{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+label{display:flex;flex-direction:column;gap:3px;font-size:.85rem;color:var(--muted)}
+label.full,.full{grid-column:1/-1}
+input,select,textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;width:100%}
+#dmsg{color:var(--warn);font-weight:600;min-height:1.2em}
+@media(max-width:420px){form{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+  <header><h1>Asset Sayım</h1><div id="count">0<small>kayıt</small></div></header>
+  <div id="reader"></div>
+  <div id="msg" role="status" aria-live="polite"></div>
+  <div class="row">
+    <button id="toggle" class="primary grow">Kamerayı aç</button>
+    <button id="manual">QR yok, elle ekle</button>
+  </div>
+  <div class="row">
+    <button id="xlsx" class="grow">Excel indir (.xlsx)</button>
+    <button id="csv">CSV indir</button>
+    <button id="clear" class="danger">Hepsini sil</button>
+  </div>
+  <ul id="list"></ul>
+</main>
+
+<dialog id="dlg">
+  <form id="f" method="dialog">
+    <label class="full">Asset ID<input name="id" inputmode="numeric" autocomplete="off"></label>
+    <label>Asset Type
+      <select name="type"></select>
+    </label>
+    <label>Manufacturer<input name="mfr" list="dl-mfr" autocomplete="off"></label>
+    <label>Model<input name="model" list="dl-model" autocomplete="off"></label>
+    <label>Serial Number (Asset ID yoksa)<input name="serial" autocomplete="off"></label>
+    <label>Personnel<input name="person" autocomplete="off"></label>
+    <label>Status<select name="status"></select></label>
+    <label>Condition<select name="cond"></select></label>
+    <label class="full">Location<input name="loc" autocomplete="off"></label>
+    <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+    <div id="dmsg" class="full" role="alert"></div>
+    <button type="button" id="save" class="primary full">Kaydet ve sıradakini tara</button>
+    <button type="button" id="cancel">Vazgeç</button>
+    <button type="button" id="del" class="danger">Bu kaydı sil</button>
+  </form>
+  <datalist id="dl-mfr"></datalist><datalist id="dl-model"></datalist>
+</dialog>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+// ---- Ayarlar: gerekirse buradan değiştir ----
+const PATTERN = /^\d{8}$/;   // karekoddan beklenen asset numarası formatı
+const OPTIONS = {
+  type:   ['Laptop','Monitor','Desktop','Docking Station','Telefon','Tablet','Yazıcı','Diğer'],
+  status: ['Active','In Storage','Retired','Missing'],
+  cond:   ['Good','New','Fair','Poor','Damaged']
+};
+// Excel sütun sırası: [başlık, kayıt alanı]
+const COLS = [['Asset ID','id'],['Asset Type','type'],['Manufacturer','mfr'],['Model','model'],
+  ['Serial Number','serial'],['Personnel','person'],['Status','status'],['Condition','cond'],
+  ['Location','loc'],['Last Verified','verified'],['Notes','notes']];
+// Yeni kayıtta bir önceki kayıttan devralınan alanlar
+const STICKY = ['type','mfr','model','status','cond','loc'];
+// ---------------------------------------------
+
+const KEY = 'asset-sayim-v1';
+const $ = id => document.getElementById(id);
+const f = $('f'), dlg = $('dlg');
+let records = [], last = {}, editing = -1, scanner = null, running = false, busy = false, badText = '', badAt = 0;
+
+try { const s = JSON.parse(localStorage.getItem(KEY) || '{}'); records = s.records || []; last = s.last || {}; } catch (e) {}
+const persist = () => { try { localStorage.setItem(KEY, JSON.stringify({records, last})); } catch (e) {} };
+
+for (const k in OPTIONS) OPTIONS[k].forEach(v => f[k].add(new Option(v, v)));
+
+function say(text, kind) { const m = $('msg'); m.textContent = text; m.className = kind || ''; }
+
+function beep(ok) {
+  try {
+    const c = new (window.AudioContext || window.webkitAudioContext)(), o = c.createOscillator();
+    o.frequency.value = ok ? 880 : 220; o.connect(c.destination); o.start(); o.stop(c.currentTime + (ok ? .12 : .3));
+  } catch (e) {}
+  if (navigator.vibrate) navigator.vibrate(ok ? 60 : [80, 60, 80]);
+}
+
+function render() {
+  $('count').firstChild.textContent = records.length;
+  const ul = $('list'); ul.replaceChildren();
+  if (!records.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = 'Henüz kayıt yok. Kamerayı aç ve bir sticker okut.'; ul.append(p); }
+  records.slice().reverse().forEach((r, n) => {
+    const i = records.length - 1 - n, li = document.createElement('li'), b = document.createElement('button');
+    const a = document.createElement('span'); a.className = 'id'; a.textContent = r.id || ('Seri: ' + (r.serial || '?'));
+    const m = document.createElement('span'); m.className = 'meta';
+    m.textContent = [r.type, [r.mfr, r.model].filter(Boolean).join(' '), r.loc].filter(Boolean).join('   ');
+    b.append(a, m); b.onclick = () => stop().then(() => openForm(records[i], i)); li.append(b); ul.append(li);
+  });
+  const uniq = k => [...new Set(records.map(r => r[k]).filter(Boolean))];
+  $('dl-mfr').replaceChildren(...uniq('mfr').map(v => new Option(v)));
+  $('dl-model').replaceChildren(...uniq('model').map(v => new Option(v)));
+}
+
+function openForm(rec, idx) {
+  editing = idx; $('dmsg').textContent = '';
+  const base = idx >= 0 ? rec : Object.assign({}, Object.fromEntries(STICKY.map(k => [k, last[k]])), rec);
+  COLS.forEach(([, k]) => { if (f[k]) f[k].value = base[k] || (OPTIONS[k] ? OPTIONS[k][0] : ''); });
+  if (idx < 0) ['serial','person','notes'].forEach(k => f[k].value = '');
+  $('del').style.display = idx >= 0 ? '' : 'none';
+  dlg.showModal();
+}
+
+function save() {
+  const r = {}; COLS.forEach(([, k]) => { if (f[k]) r[k] = f[k].value.trim(); });
+  if (!r.id && !r.serial) { $('dmsg').textContent = 'Asset ID ya da Serial Number gerekli.'; return; }
+  if (r.id && records.some((x, i) => x.id === r.id && i !== editing)) { $('dmsg').textContent = 'Bu Asset ID zaten kayıtlı.'; return; }
+  r.verified = new Date().toISOString().slice(0, 10);
+  if (editing >= 0) records[editing] = r; else records.push(r);
+  STICKY.forEach(k => last[k] = r[k]);
+  persist(); render(); dlg.close('saved'); say('Kaydedildi: ' + (r.id || r.serial), 'ok');
+}
+
+dlg.addEventListener('close', () => { if (running) { try { scanner.resume(); } catch (e) {} } busy = false; });
+$('save').onclick = save;
+$('cancel').onclick = () => dlg.close('cancel');
+$('del').onclick = () => { if (confirm('Bu kayıt silinsin mi?')) { records.splice(editing, 1); persist(); render(); dlg.close('del'); } };
+
+function onScan(text) {
+  if (busy) return;
+  const id = text.trim();
+  if (!PATTERN.test(id)) {
+    if (id === badText && Date.now() - badAt < 2500) return;
+    badText = id; badAt = Date.now(); beep(false); say('Beklenmeyen içerik: ' + id.slice(0, 40), 'warn'); return;
+  }
+  busy = true; try { scanner.pause(true); } catch (e) {}
+  const i = records.findIndex(r => r.id === id);
+  beep(true);
+  if (i >= 0) { say('Bu asset daha önce okutulmuş: ' + id, 'warn'); openForm(records[i], i); }
+  else { say('Okundu: ' + id, 'ok'); openForm({id}, -1); }
+}
+
+async function start() {
+  try {
+    scanner = scanner || new Html5Qrcode('reader');
+    await scanner.start({facingMode: 'environment'}, {fps: 10, qrbox: {width: 240, height: 240}, formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE]}, onScan, () => {});
+    running = true; $('toggle').textContent = 'Kamerayı kapat'; say('Sticker üzerindeki karekoda yaklaştır.');
+  } catch (e) { say('Kamera açılamadı. Sayfanın HTTPS olduğundan ve kamera izni verildiğinden emin ol.', 'warn'); }
+}
+async function stop() {
+  if (!running) return;
+  try { await scanner.stop(); } catch (e) {}
+  running = false; $('toggle').textContent = 'Kamerayı aç';
+}
+$('toggle').onclick = () => running ? stop() : start();
+$('manual').onclick = () => stop().then(() => openForm({}, -1));
+
+function rows() { return records.map(r => Object.fromEntries(COLS.map(([h, k]) => [h, r[k] || '']))); }
+const stamp = () => new Date().toISOString().slice(0, 10);
+$('xlsx').onclick = () => {
+  if (!records.length) return say('Dışa aktarılacak kayıt yok.', 'warn');
+  const ws = XLSX.utils.json_to_sheet(rows(), {header: COLS.map(c => c[0])}), wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Assets'); XLSX.writeFile(wb, 'asset-sayim-' + stamp() + '.xlsx');
+};
+$('csv').onclick = () => {
+  if (!records.length) return say('Dışa aktarılacak kayıt yok.', 'warn');
+  const q = v => '"' + String(v).replace(/"/g, '""') + '"';
+  // Türkçe Excel ayırıcı olarak ; bekler
+  const txt = '\ufeff' + [COLS.map(c => q(c[0]))].concat(records.map(r => COLS.map(([, k]) => q(r[k] || '')))).map(a => a.join(';')).join('\r\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([txt], {type: 'text/csv;charset=utf-8'}));
+  a.download = 'asset-sayim-' + stamp() + '.csv'; a.click();
+};
+$('clear').onclick = () => { if (records.length && confirm('Tüm kayıtlar silinecek. Emin misin?')) { records = []; persist(); render(); say('Liste temizlendi.'); } };
+
+render();
+</script>
+</body>
+</html>
